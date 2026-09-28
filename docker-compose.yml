@@ -1,0 +1,32 @@
+services:
+  app:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      - NODE_ENV=production
+      - TRUST_PROXY=true
+    volumes:
+      - ./data:/data
+    expose:
+      - "8080"
+
+  # Porta de entrada: HTTP na porta 80 pelo IP, ou HTTPS automático se DOMAIN estiver no .env
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    depends_on:
+      - app
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      - DOMAIN=${DOMAIN:-}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+
+volumes:
+  caddy_data:
+  caddy_config:

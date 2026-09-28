@@ -1,0 +1,10 @@
+import "@fontsource/big-shoulders-display/latin-600";
+import "@fontsource/big-shoulders-display/latin-700";
+import "@fontsource/big-shoulders-display/latin-800";
+import "@fontsource/instrument-sans/latin-400";
+import "@fontsource/instrument-sans/latin-500";
+import "@fontsource/instrument-sans/latin-600";
+import "@fontsource/instrument-sans/latin-700";
+import "./style.css";
+import "./App.jsx";
+if ("serviceWorker" in navigator && import.meta.env.PROD) window.addEventListener("load", () => navigator.serviceWorker.register("/sw.js").catch(() => {}));

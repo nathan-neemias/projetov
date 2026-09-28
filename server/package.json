@@ -1,0 +1,19 @@
+{
+  "name": "projeto-v-server",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "main": "src/index.js",
+  "scripts": { "start": "node src/index.js", "test": "node --test test/api.test.mjs" },
+  "engines": { "node": ">=20" },
+  "dependencies": {
+    "better-sqlite3": "^11.5.0",
+    "bcryptjs": "^2.4.3",
+    "compression": "^1.7.4",
+    "cookie-parser": "^1.4.6",
+    "express": "^4.21.0",
+    "express-rate-limit": "^7.4.0",
+    "helmet": "^8.0.0",
+    "jsonwebtoken": "^9.0.2"
+  }
+}
