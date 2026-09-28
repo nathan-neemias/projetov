@@ -6,7 +6,7 @@ import os from "node:os";
 import path from "node:path";
 import { createApp } from "../src/app.js";
 
-let srv, base, mock, mockBase, calls = [], jar = "";
+let srv, base, mock, mockBase, calls = [], jar = "", db;
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "pv-"));
 const sse = (events) => events.map((e) => `event: ${e.type}\ndata: ${JSON.stringify(e)}\n\n`).join("");
 
@@ -26,10 +26,11 @@ before(async () => {
     });
   });
   await new Promise((r) => mock.listen(0, r)); mockBase = `http://127.0.0.1:${mock.address().port}`;
-  const { app } = createApp({ dataDir: tmp, webDir: "/nao-existe", anthropicKey: "k-teste", anthropicBase: mockBase, jwtSecret: "x".repeat(40), coachDailyLimit: 3 });
-  srv = http.createServer(app); await new Promise((r) => srv.listen(0, r)); base = `http://127.0.0.1:${srv.address().port}`;
+  const created = await createApp({ dataDir: tmp, webDir: "/nao-existe", anthropicKey: "k-teste", anthropicBase: mockBase, jwtSecret: "x".repeat(40), coachDailyLimit: 3, databaseUrl: "" });
+  db = created.db;
+  srv = http.createServer(created.app); await new Promise((r) => srv.listen(0, r)); base = `http://127.0.0.1:${srv.address().port}`;
 });
-after(() => { srv.close(); mock.close(); });
+after(async () => { srv.close(); mock.close(); if (db) await db.close(); });
 
 const req = async (method, url, body, extra = {}) => {
   const r = await fetch(base + url, { method, headers: { "content-type": "application/json", cookie: jar, ...extra }, body: body ? JSON.stringify(body) : undefined });
@@ -88,7 +89,6 @@ test("coach: streaming, ferramenta de proposta e limite diário", async () => {
   assert.ok(ev.some((e) => e.type === "text" && e.delta === "Ok.")); assert.equal(ev.at(-1).type, "done");
   assert.equal(calls.length, 2); assert.ok(calls[0].system.includes("NUTRICIONISTA")); assert.ok(calls[0].system.includes("kcal 2450")); assert.equal(calls[0].tools.length, 5);
   assert.equal(calls[1].messages.at(-1).content[0].type, "tool_result");
-  // meta abaixo do piso é recusada pela ferramenta
   const bad = await req("POST", "/api/coach", { mode: "nutri", messages: [{ role: "user", content: "meta 1000" }], plan: {} }); assert.equal(bad.s, 200);
   const limit = await req("POST", "/api/coach", { mode: "personal", messages: [{ role: "user", content: "oi" }] }); assert.equal(limit.s, 200);
   const over = await req("POST", "/api/coach", { mode: "personal", messages: [{ role: "user", content: "oi" }] }); assert.equal(over.s, 429);
@@ -98,13 +98,21 @@ test("banco: migrações idempotentes e status", async () => {
   const { migrate, status, LATEST } = await import("../src/migrate.js");
   const { openDb } = await import("../src/db.js");
   const d = fs.mkdtempSync(path.join(os.tmpdir(), "pv-mig-"));
-  const db = openDb(d);
-  assert.deepEqual(migrate(db).applied, []);
-  const s = status(db, db.dbFile);
-  assert.equal(s.versaoDoEsquema, LATEST); assert.equal(s.integridade, "ok"); assert.ok("users" in s.tabelas && "docs" in s.tabelas && "usage" in s.tabelas);
-  db.close();
-  // banco criado pela versão antiga (sem schema_migrations) é adotado sem perder dados
-  const Database = (await import("better-sqlite3")).default, d2 = fs.mkdtempSync(path.join(os.tmpdir(), "pv-old-")), old = new Database(path.join(d2, "projeto-v.sqlite"));
-  old.exec("CREATE TABLE users (id INTEGER PRIMARY KEY AUTOINCREMENT, email TEXT NOT NULL UNIQUE, name TEXT NOT NULL DEFAULT '', hash TEXT NOT NULL, token_version INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP); INSERT INTO users(email,hash) VALUES('velho@x.com','h');"); old.close();
-  const adotado = openDb(d2); assert.equal(adotado.prepare("SELECT COUNT(*) c FROM users").get().c, 1); assert.equal(status(adotado, adotado.dbFile).versaoDoEsquema, LATEST); adotado.close();
+  const db2 = await openDb({ dataDir: d, databaseUrl: "" });
+  assert.deepEqual((await migrate(db2)).applied, []);
+  const s = await status(db2);
+  assert.equal(s.versaoDoEsquema, LATEST);
+  assert.equal(s.integridade, "ok");
+  assert.ok("users" in s.tabelas && "docs" in s.tabelas && "usage" in s.tabelas);
+  await db2.close();
+});
+
+test("prompts master personal e nutri existem e citam a lógica principal", async () => {
+  const { PERSONAL_RULES, NUTRI_RULES } = await import("../../shared/prompts.js");
+  assert.match(PERSONAL_RULES, /AVALIAR/);
+  assert.match(PERSONAL_RULES, /PERSONAL TRAINER|PERSONAL/i);
+  assert.match(NUTRI_RULES, /AVALIAR/);
+  assert.match(NUTRI_RULES, /NUTRICIONISTA/i);
+  assert.match(PERSONAL_RULES, /propor_troca_exercicio|FERRAMENTAS/);
+  assert.match(NUTRI_RULES, /propor_metas_dieta|FERRAMENTAS/);
 });

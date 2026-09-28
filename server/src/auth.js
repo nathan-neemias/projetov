@@ -17,21 +17,20 @@ export function authRouter({ db, config }) {
 
   r.post("/register", limiter, async (req, res) => {
     const { email, senha, nome } = req.body || {};
-    const count = db.prepare("SELECT COUNT(*) c FROM users").get().c;
-    if (!config.allowRegistration && count > 0) return res.status(403).json({ erro: "Cadastro fechado neste servidor." });
+    const countRow = await db.one("SELECT COUNT(*)::int AS c FROM users");
+    if (!config.allowRegistration && countRow.c > 0) return res.status(403).json({ erro: "Cadastro fechado neste servidor." });
     const em = String(email || "").trim().toLowerCase();
     if (!EMAIL.test(em)) return res.status(400).json({ erro: "E-mail inválido." });
     if (typeof senha !== "string" || senha.length < 8 || senha.length > 200) return res.status(400).json({ erro: "A senha precisa ter pelo menos 8 caracteres." });
-    if (db.prepare("SELECT 1 FROM users WHERE email=?").get(em)) return res.status(409).json({ erro: "Este e-mail já está cadastrado." });
+    if (await db.one("SELECT 1 AS x FROM users WHERE email=$1", [em])) return res.status(409).json({ erro: "Este e-mail já está cadastrado." });
     const hash = await bcrypt.hash(senha, 11);
-    const info = db.prepare("INSERT INTO users(email,name,hash) VALUES(?,?,?)").run(em, String(nome || "").trim().slice(0, 80), hash);
-    const u = db.prepare("SELECT * FROM users WHERE id=?").get(info.lastInsertRowid);
+    const u = await db.one("INSERT INTO users(email, name, hash) VALUES($1,$2,$3) RETURNING *", [em, String(nome || "").trim().slice(0, 80), hash]);
     setCookie(res, u); res.status(201).json({ user: publicUser(u) });
   });
 
   r.post("/login", limiter, async (req, res) => {
     const em = String(req.body?.email || "").trim().toLowerCase(), senha = String(req.body?.senha || "");
-    const u = db.prepare("SELECT * FROM users WHERE email=?").get(em);
+    const u = await db.one("SELECT * FROM users WHERE email=$1", [em]);
     const ok = u ? await bcrypt.compare(senha, u.hash) : await bcrypt.compare(senha, "$2a$11$0000000000000000000000000000000000000000000000000000.");
     if (!u || !ok) return res.status(401).json({ erro: "E-mail ou senha incorretos." });
     setCookie(res, u); res.json({ user: publicUser(u) });
@@ -47,8 +46,7 @@ export function authRouter({ db, config }) {
     if (!(await bcrypt.compare(String(atual || ""), req.user.hash))) return res.status(403).json({ erro: "Senha atual incorreta." });
     if (typeof nova !== "string" || nova.length < 8 || nova.length > 200) return res.status(400).json({ erro: "A nova senha precisa ter pelo menos 8 caracteres." });
     const hash = await bcrypt.hash(nova, 11);
-    db.prepare("UPDATE users SET hash=?, token_version=token_version+1 WHERE id=?").run(hash, req.user.id);
-    const u = db.prepare("SELECT * FROM users WHERE id=?").get(req.user.id);
+    const u = await db.one("UPDATE users SET hash=$1, token_version=token_version+1 WHERE id=$2 RETURNING *", [hash, req.user.id]);
     setCookie(res, u); res.json({ ok: true });
   });
 
@@ -57,11 +55,19 @@ export function authRouter({ db, config }) {
 
 export function sessionMiddleware({ db, config }) {
   return (req, _res, next) => {
-    const t = req.cookies && req.cookies[COOKIE];
-    if (t) {
-      try { const p = jwt.verify(t, config.jwtSecret); const u = db.prepare("SELECT * FROM users WHERE id=?").get(p.uid); if (u && u.token_version === p.tv) req.user = u; } catch { /* sessão inválida */ }
-    }
-    next();
+    Promise.resolve()
+      .then(async () => {
+        const t = req.cookies && req.cookies[COOKIE];
+        if (t) {
+          try {
+            const p = jwt.verify(t, config.jwtSecret);
+            const u = await db.one("SELECT * FROM users WHERE id=$1", [p.uid]);
+            if (u && Number(u.token_version) === Number(p.tv)) req.user = u;
+          } catch { /* sessão inválida */ }
+        }
+        next();
+      })
+      .catch(next);
   };
 }
 export const requireUser = (req, res, next) => (req.user ? next() : res.status(401).json({ erro: "Faça login." }));

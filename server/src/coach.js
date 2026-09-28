@@ -7,7 +7,7 @@ import { TOOL_DEFS, runTool } from "../../shared/tools.js";
 const MEDIA = new Set(["image/jpeg", "image/png", "image/webp", "image/gif"]);
 const today = () => new Date().toISOString().slice(0, 10);
 
-function friendly(status, body) {
+function friendly(status) {
   if (status === 401 || status === 403) return { code: "api_key", message: "A chave da API da Anthropic no servidor é inválida ou não tem permissão." };
   if (status === 429) return { code: "rate_limited", message: "O limite de uso da API foi atingido. Tente de novo em alguns minutos." };
   if (status === 529 || status === 503) return { code: "overloaded", message: "O serviço de IA está ocupado. Tente de novo em instantes." };
@@ -49,9 +49,14 @@ async function streamOnce({ config, system, messages, signal }, send) {
 export function coachRouter({ db, config }) {
   const r = express.Router();
   r.use(requireUser);
-  const used = (uid) => (db.prepare("SELECT coach_calls c FROM usage WHERE user_id=? AND day=?").get(uid, today()) || { c: 0 }).c;
+  const used = async (uid) => {
+    const row = await db.one("SELECT coach_calls AS c FROM usage WHERE user_id=$1 AND day=$2", [uid, today()]);
+    return row ? Number(row.c) : 0;
+  };
 
-  r.get("/coach/status", (req, res) => res.json({ enabled: !!config.anthropicKey, images: true, model: config.model, limite: config.coachDailyLimit, usados: used(req.user.id) }));
+  r.get("/coach/status", async (req, res) => {
+    res.json({ enabled: !!config.anthropicKey, images: true, model: config.model, limite: config.coachDailyLimit, usados: await used(req.user.id) });
+  });
 
   r.post("/coach", express.json({ limit: "12mb" }), async (req, res) => {
     if (!config.anthropicKey) return res.status(503).json({ erro: "O coach não está configurado neste servidor (falta ANTHROPIC_API_KEY)." });
@@ -65,8 +70,12 @@ export function coachRouter({ db, config }) {
     if (context != null && (typeof context !== "string" || context.length > 30000)) return res.status(400).json({ erro: "Contexto inválido." });
     const imgs = Array.isArray(images) ? images.slice(0, 2) : [];
     for (const im of imgs) if (!im || !MEDIA.has(im.media_type) || typeof im.data !== "string" || im.data.length > 7_000_000) return res.status(400).json({ erro: "Imagem inválida ou grande demais." });
-    if (used(req.user.id) >= config.coachDailyLimit) return res.status(429).json({ erro: `Limite diário de ${config.coachDailyLimit} perguntas ao coach atingido. Volte amanhã.` });
-    db.prepare("INSERT INTO usage(user_id,day,coach_calls) VALUES(?,?,1) ON CONFLICT(user_id,day) DO UPDATE SET coach_calls=coach_calls+1").run(req.user.id, today());
+    if ((await used(req.user.id)) >= config.coachDailyLimit) return res.status(429).json({ erro: `Limite diário de ${config.coachDailyLimit} perguntas ao coach atingido. Volte amanhã.` });
+    await db.query(
+      `INSERT INTO usage(user_id,day,coach_calls) VALUES($1,$2,1)
+       ON CONFLICT(user_id,day) DO UPDATE SET coach_calls=usage.coach_calls+1`,
+      [req.user.id, today()],
+    );
 
     if (imgs.length) { const last = msgs[msgs.length - 1]; last.content = [...imgs.map((im) => ({ type: "image", source: { type: "base64", media_type: im.media_type, data: im.data } })), { type: "text", text: last.content }]; }
     const system = `${mode === "personal" ? PERSONAL_RULES : NUTRI_RULES}\n\n# DADOS DO ALUNO (atualizados agora)\n${context || "sem dados"}`;
@@ -88,7 +97,7 @@ export function coachRouter({ db, config }) {
       }
       send({ type: "done", truncated });
     } catch (e) {
-      if (!ac.signal.aborted) send({ type: "error", ...friendly(e.status, null) });
+      if (!ac.signal.aborted) send({ type: "error", ...friendly(e.status) });
     } finally { res.end(); }
   });
   return r;

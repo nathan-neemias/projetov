@@ -10,9 +10,9 @@ import { authRouter, sessionMiddleware, sameOrigin } from "./auth.js";
 import { dataRouter } from "./data.js";
 import { coachRouter } from "./coach.js";
 
-export function createApp(over = {}) {
+export async function createApp(over = {}) {
   const config = { ...base, ...over };
-  const db = openDb(config.dataDir);
+  const db = await openDb(config);
   const app = express();
   app.disable("x-powered-by");
   if (config.trustProxy) app.set("trust proxy", 1);

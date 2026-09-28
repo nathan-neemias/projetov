@@ -1,18 +1,37 @@
 services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: projetov
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: projetov
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U projetov -d projetov"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
   app:
     build: .
     restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
     env_file: .env
     environment:
       - NODE_ENV=production
       - TRUST_PROXY=true
-    volumes:
-      - ./data:/data
-    expose:
-      - "8080"
+      - DATABASE_URL=postgresql://projetov:${POSTGRES_PASSWORD}@db:5432/projetov
+    ports:
+      - "8080:8080"
 
-  # Porta de entrada: HTTP na porta 80 pelo IP, ou HTTPS automático se DOMAIN estiver no .env
+  # Opcional: docker compose --profile with-caddy up -d
+  # (não use se a porta 80/443 já estiver com nginx)
   caddy:
+    profiles: ["with-caddy"]
     image: caddy:2-alpine
     restart: unless-stopped
     depends_on:
@@ -28,5 +47,6 @@ services:
       - caddy_config:/config
 
 volumes:
+  pgdata:
   caddy_data:
   caddy_config:
